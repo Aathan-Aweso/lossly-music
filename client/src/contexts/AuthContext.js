@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
-import API_BASE_URL from '../config';
+import { API_URL } from '../config';
 
 const AuthContext = createContext();
 
@@ -26,7 +26,7 @@ export const AuthProvider = ({ children }) => {
       const token = localStorage.getItem('token');
       if (token) {
         axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-        const response = await axios.get(`${API_BASE_URL}/auth/me`);
+        const response = await axios.get(`${API_URL}/api/auth/me`);
         setUser(response.data);
       }
     } catch (error) {
@@ -42,13 +42,29 @@ export const AuthProvider = ({ children }) => {
   const login = async (email, password) => {
     try {
       setError(null);
-      const response = await axios.post(`${API_BASE_URL}/auth/login`, { email, password });
+      const response = await axios.post(`${API_URL}/api/auth/login`, { email, password });
       const { token, user: userData } = response.data;
       localStorage.setItem('token', token);
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       setUser(userData);
     } catch (error) {
-      setError(error.response?.data?.message || 'Login failed');
+      let errorMessage = 'Login failed';
+      
+      if (error.response) {
+        // The request was made and the server responded with a status code
+        // that falls out of the range of 2xx
+        if (error.response.data && error.response.data.message) {
+          errorMessage = error.response.data.message;
+        }
+      } else if (error.request) {
+        // The request was made but no response was received
+        errorMessage = 'No response from server. Please check your connection.';
+      } else {
+        // Something happened in setting up the request that triggered an Error
+        errorMessage = `Error: ${error.message}`;
+      }
+      
+      setError(errorMessage);
       throw error;
     }
   };
@@ -56,7 +72,7 @@ export const AuthProvider = ({ children }) => {
   const register = async (username, email, password) => {
     try {
       setError(null);
-      const response = await axios.post(`${API_BASE_URL}/auth/register`, {
+      const response = await axios.post(`${API_URL}/api/auth/register`, {
         username,
         email,
         password
@@ -66,7 +82,27 @@ export const AuthProvider = ({ children }) => {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       setUser(userData);
     } catch (error) {
-      setError(error.response?.data?.message || 'Registration failed');
+      let errorMessage = 'Registration failed';
+      
+      if (error.response) {
+        // The request was made and the server responded with a status code
+        // that falls out of the range of 2xx
+        if (error.response.data && error.response.data.message) {
+          errorMessage = error.response.data.message;
+        } else if (error.response.data && error.response.data.errors) {
+          // Handle validation errors
+          const validationErrors = error.response.data.errors.map(err => `${err.path}: ${err.msg}`).join(', ');
+          errorMessage = `Validation errors: ${validationErrors}`;
+        }
+      } else if (error.request) {
+        // The request was made but no response was received
+        errorMessage = 'No response from server. Please check your connection.';
+      } else {
+        // Something happened in setting up the request that triggered an Error
+        errorMessage = `Error: ${error.message}`;
+      }
+      
+      setError(errorMessage);
       throw error;
     }
   };
@@ -81,7 +117,7 @@ export const AuthProvider = ({ children }) => {
   const updateProfile = async (data) => {
     try {
       setError(null);
-      const response = await axios.put(`${API_BASE_URL}/users/profile`, data);
+      const response = await axios.put(`${API_URL}/api/users/profile`, data);
       setUser(response.data);
     } catch (error) {
       setError(error.response?.data?.message || 'Failed to update profile');

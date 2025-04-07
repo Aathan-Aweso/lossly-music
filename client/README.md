@@ -23,13 +23,15 @@ This is the frontend application for the Lossless Music Streamer, a high-quality
 
 1. Clone the repository
 2. Install dependencies:
+
    ```bash
    npm install
    ```
 
 3. Create a `.env` file in the root directory and add the following:
+
    ```
-   REACT_APP_API_URL=http://localhost:5000
+   REACT_APP_API_URL=http://localhost:5002
    ```
 
 4. Start the development server:
@@ -60,7 +62,7 @@ src/
 
 ## Environment Variables
 
-- `REACT_APP_API_URL` - Backend API URL (default: http://localhost:5000)
+- `REACT_APP_API_URL` - Backend API URL (default: http://localhost:5002)
 
 ## Contributing
 
@@ -72,4 +74,4 @@ src/
 
 ## License
 
-MIT License 
+MIT License

@@ -83,7 +83,7 @@ const Search = () => {
                   >
                     <div className="flex items-center space-x-4">
                       <img
-                        src={`http://localhost:5001/api/songs/cover/${song.coverArt}`}
+                        src={`http://localhost:5002/api/songs/cover/${song.coverArt}`}
                         alt={song.title}
                         className="w-12 h-12 rounded-md"
                       />

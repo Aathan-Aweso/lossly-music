@@ -97,7 +97,7 @@ const Home = () => {
                 <div className="w-12 h-12 rounded-md overflow-hidden">
                   {song.coverArt ? (
                     <img
-                      src={`http://localhost:5001/api/songs/cover/${song.coverArt}`}
+                      src={`http://localhost:5002/api/songs/cover/${song.coverArt}`}
                       alt={song.title}
                       className="w-full h-full object-cover"
                     />

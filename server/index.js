@@ -10,6 +10,19 @@ const compression = require('compression');
 
 const app = express();
 
+// CORS configuration
+const corsOptions = {
+  origin: process.env.CLIENT_URL || 'http://localhost:3000',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 86400 // 24 hours
+};
+
+// Apply CORS before other middleware
+app.use(cors(corsOptions));
+
 // Security middleware
 app.use(helmet({
   contentSecurityPolicy: {
@@ -19,9 +32,12 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "blob:"],
       mediaSrc: ["'self'", "blob:"],
-      connectSrc: ["'self'", "ws:", "wss:"],
+      connectSrc: ["'self'", "ws:", "wss:", "http://localhost:3000", "http://localhost:5002"],
     },
   },
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" }
 }));
 
 // Rate limiting
@@ -35,10 +51,6 @@ app.use(limiter);
 app.use(compression());
 
 // Middleware
-app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
-  credentials: true
-}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -63,15 +75,17 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/lossly-mu
   useNewUrlParser: true,
   useUnifiedTopology: true,
   maxPoolSize: 10,
-  serverSelectionTimeoutMS: 5000,
-  socketTimeoutMS: 45000,
+  serverSelectionTimeoutMS: 5002,
+  socketTimeoutMS: 45002,
 })
 .then(() => console.log('Connected to MongoDB'))
 .catch(err => console.error('MongoDB connection error:', err));
 
 // Routes
+app.use('/api/auth', require('./routes/auth'));
 app.use('/api/songs', require('./routes/songs'));
 app.use('/api/users', require('./routes/users'));
+app.use('/api/playlists', require('./routes/playlists'));
 
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {
@@ -87,7 +101,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: 'Something went wrong!' });
 });
 
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5002;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 }); 

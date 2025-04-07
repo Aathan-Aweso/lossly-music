@@ -10,11 +10,23 @@ const Login = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    if (!email || !password) {
+      alert('Please enter both email and password');
+      return;
+    }
+    
     try {
       await login(email, password);
       navigate('/');
     } catch (error) {
       console.error('Login failed:', error);
+      // Show a more user-friendly error message
+      if (error.response && error.response.data && error.response.data.message) {
+        alert(error.response.data.message);
+      } else {
+        alert('Login failed. Please check your credentials and try again.');
+      }
     }
   };
 

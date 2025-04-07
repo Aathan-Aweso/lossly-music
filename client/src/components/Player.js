@@ -177,7 +177,7 @@ const Player = () => {
             <div className="w-14 h-14 rounded-lg overflow-hidden">
               {currentSong.coverArt ? (
                 <img
-                  src={`http://localhost:5001/api/songs/cover/${currentSong.coverArt}`}
+                  src={`http://localhost:5002/api/songs/cover/${currentSong.coverArt}`}
                   alt={currentSong.title}
                   className="w-full h-full object-cover"
                 />

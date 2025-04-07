@@ -1,7 +1,7 @@
-const config = {
+export const config = {
   API_URL: process.env.NODE_ENV === 'production' 
     ? window.location.origin 
-    : 'http://localhost:5001',
+    : 'http://localhost:5002',
   MAX_FILE_SIZE: 100 * 1024 * 1024, // 100MB
   SUPPORTED_AUDIO_FORMATS: ['mp3', 'flac', 'wav', 'm4a'],
   SUPPORTED_IMAGE_FORMATS: ['jpg', 'jpeg', 'png', 'webp'],
@@ -13,4 +13,4 @@ const config = {
   RETRY_DELAY: 1000, // 1 second
 };
 
-export default config; 
+export const { API_URL } = config; 

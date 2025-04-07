@@ -19,7 +19,7 @@ npm install
 # Create production environment file
 echo "🔧 Creating production environment file..."
 cat > .env << EOL
-PORT=5001
+PORT=5002
 NODE_ENV=production
 MONGODB_URI=$MONGODB_URI
 SESSION_SECRET=$SESSION_SECRET

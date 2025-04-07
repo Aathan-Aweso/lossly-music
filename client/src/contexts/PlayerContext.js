@@ -76,7 +76,7 @@ export const PlayerProvider = ({ children }) => {
       isChangingSong.current = true;
 
       // Set new source and load
-      audioRef.current.src = `http://localhost:5001/api/songs/${currentSong._id}/stream`;
+      audioRef.current.src = `http://localhost:5002/api/songs/${currentSong._id}/stream`;
       audioRef.current.load();
     }
   }, [currentSong]);

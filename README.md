@@ -38,7 +38,7 @@ A Spotify-like web player streaming service that delivers high-quality, lossless
    ```
    MONGODB_URI=your_mongodb_uri
    JWT_SECRET=your_jwt_secret
-   PORT=5000
+   PORT=5002
    ```
 4. Start the development server:
    ```bash
@@ -59,4 +59,4 @@ A Spotify-like web player streaming service that delivers high-quality, lossless
 
 ## License
 
-MIT 
+MIT

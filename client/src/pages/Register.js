@@ -7,14 +7,50 @@ const Register = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [formErrors, setFormErrors] = useState({});
   const { register, error } = useAuth();
   const navigate = useNavigate();
 
+  const validateForm = () => {
+    const errors = {};
+
+    // Username validation
+    if (!username) {
+      errors.username = 'Username is required';
+    } else if (username.length < 3) {
+      errors.username = 'Username must be at least 3 characters long';
+    } else if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+      errors.username = 'Username can only contain letters, numbers, and underscores';
+    }
+
+    // Email validation
+    if (!email) {
+      errors.email = 'Email is required';
+    } else if (!/\S+@\S+\.\S+/.test(email)) {
+      errors.email = 'Please enter a valid email address';
+    }
+
+    // Password validation
+    if (!password) {
+      errors.password = 'Password is required';
+    } else if (password.length < 6) {
+      errors.password = 'Password must be at least 6 characters long';
+    }
+
+    // Confirm password validation
+    if (password !== confirmPassword) {
+      errors.confirmPassword = 'Passwords do not match';
+    }
+
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (password !== confirmPassword) {
-      alert('Passwords do not match');
+    setFormErrors({});
+
+    if (!validateForm()) {
       return;
     }
 
@@ -23,6 +59,13 @@ const Register = () => {
       navigate('/');
     } catch (error) {
       console.error('Registration failed:', error);
+      if (error.response?.data?.errors) {
+        const serverErrors = {};
+        error.response.data.errors.forEach(err => {
+          serverErrors[err.path] = err.msg;
+        });
+        setFormErrors(serverErrors);
+      }
     }
   };
 
@@ -60,8 +103,11 @@ const Register = () => {
                 required
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="input mt-1"
+                className={`input mt-1 ${formErrors.username ? 'border-red-500' : ''}`}
               />
+              {formErrors.username && (
+                <p className="mt-1 text-sm text-red-500">{formErrors.username}</p>
+              )}
             </div>
 
             <div>
@@ -75,8 +121,11 @@ const Register = () => {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="input mt-1"
+                className={`input mt-1 ${formErrors.email ? 'border-red-500' : ''}`}
               />
+              {formErrors.email && (
+                <p className="mt-1 text-sm text-red-500">{formErrors.email}</p>
+              )}
             </div>
 
             <div>
@@ -90,8 +139,11 @@ const Register = () => {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="input mt-1"
+                className={`input mt-1 ${formErrors.password ? 'border-red-500' : ''}`}
               />
+              {formErrors.password && (
+                <p className="mt-1 text-sm text-red-500">{formErrors.password}</p>
+              )}
             </div>
 
             <div>
@@ -105,8 +157,11 @@ const Register = () => {
                 required
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="input mt-1"
+                className={`input mt-1 ${formErrors.confirmPassword ? 'border-red-500' : ''}`}
               />
+              {formErrors.confirmPassword && (
+                <p className="mt-1 text-sm text-red-500">{formErrors.confirmPassword}</p>
+              )}
             </div>
           </div>
 
