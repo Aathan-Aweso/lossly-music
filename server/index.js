@@ -2,8 +2,9 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const path = require('path');
+require('dotenv').config();
 const session = require('express-session');
-const MongoStore = require('connect-mongo');
+const { MongoStore } = require('connect-mongo');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const compression = require('compression');
@@ -72,6 +73,7 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/lossly-mu
 // Routes
 app.use('/api/songs', require('./routes/songs'));
 app.use('/api/users', require('./routes/users'));
+app.use('/api/rooms', require('./routes/rooms'));
 
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {
@@ -87,7 +89,9 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: 'Something went wrong!' });
 });
 
-const PORT = process.env.PORT || 5001;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-}); 
+const PORT = Number(process.env.PORT) || 5001;
+const HOST = process.env.HOST || '127.0.0.1';
+
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
+});

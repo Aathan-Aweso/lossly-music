@@ -9,8 +9,12 @@ import {
   SpeakerWaveIcon,
   SpeakerXMarkIcon,
   ArrowPathIcon,
-  ArrowsRightLeftIcon
+  ArrowsRightLeftIcon,
+  SignalIcon,
+  UserGroupIcon
 } from '@heroicons/react/24/solid';
+
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
 
 const Player = () => {
   const {
@@ -26,18 +30,23 @@ const Player = () => {
     repeat,
     toggleRepeat,
     progress,
-    setProgress,
     seekTo,
-    audioRef,
     duration,
     currentTime,
     queue,
-    setIsPlaying,
-    listeningTime
+    listeningTime,
+    roomId,
+    roomMemberCount,
+    roomSyncStatus,
+    joinRoom,
+    leaveRoom
   } = usePlayer();
 
   const [isDragging, setIsDragging] = useState(false);
   const [hasDolbyAtmos, setHasDolbyAtmos] = useState(false);
+  const [roomInput, setRoomInput] = useState('');
+  const [roomError, setRoomError] = useState('');
+  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
   const progressBarRef = useRef(null);
 
   useEffect(() => {
@@ -49,78 +58,36 @@ const Player = () => {
   }, []);
 
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume;
+    setRoomInput(roomId || '');
+  }, [roomId]);
+
+  const handleJoinRoom = async () => {
+    setRoomError('');
+    if (!roomInput.trim()) {
+      setRoomError('Enter a room id');
+      return;
     }
-  }, [volume]);
 
-  useEffect(() => {
-    if (isPlaying) {
-      const playPromise = audioRef.current?.play();
-      if (playPromise !== undefined) {
-        playPromise.catch(error => {
-          console.error('Error playing audio:', error);
-          setIsPlaying(false);
-        });
-      }
-    } else {
-      audioRef.current?.pause();
+    setIsJoiningRoom(true);
+    try {
+      await joinRoom(roomInput);
+    } catch (error) {
+      setRoomError(error?.response?.data?.message || error.message || 'Unable to join room');
+    } finally {
+      setIsJoiningRoom(false);
     }
-  }, [isPlaying, currentSong]);
+  };
 
-  // Add event listeners for external audio state changes
-  useEffect(() => {
-    if (!audioRef.current) return;
-
-    const handlePlay = () => setIsPlaying(true);
-    const handlePause = () => setIsPlaying(false);
-    const handleEnded = () => {
-      setIsPlaying(false);
-      playNext();
-    };
-    const handleError = (error) => {
-      console.error('Audio error:', error);
-      setIsPlaying(false);
-    };
-
-    // Listen for system media controls
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        // Page is hidden, check if audio is still playing
-        if (audioRef.current.paused) {
-          setIsPlaying(false);
-        }
-      }
-    };
-
-    // Listen for audio element events
-    audioRef.current.addEventListener('play', handlePlay);
-    audioRef.current.addEventListener('pause', handlePause);
-    audioRef.current.addEventListener('ended', handleEnded);
-    audioRef.current.addEventListener('error', handleError);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    // Cleanup event listeners
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.removeEventListener('play', handlePlay);
-        audioRef.current.removeEventListener('pause', handlePause);
-        audioRef.current.removeEventListener('ended', handleEnded);
-        audioRef.current.removeEventListener('error', handleError);
-      }
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [audioRef.current, setIsPlaying, playNext]);
-
-  const handleTimeUpdate = () => {
-    if (audioRef.current) {
-      const currentProgress = (audioRef.current.currentTime / audioRef.current.duration) * 100;
-      setProgress(currentProgress);
-    }
+  const handleLeaveRoom = async () => {
+    await leaveRoom();
+    setRoomInput('');
+    setRoomError('');
   };
 
   const calculateSeekPosition = (e) => {
     const progressBar = progressBarRef.current;
+    if (!progressBar) return 0;
+
     const rect = progressBar.getBoundingClientRect();
     const clickPosition = e.clientX - rect.left;
     const progressBarWidth = rect.width;
@@ -151,141 +118,117 @@ const Player = () => {
   };
 
   const formatTime = (time) => {
-    const minutes = Math.floor(time / 60);
-    const seconds = Math.floor(time % 60);
+    const safeTime = Number.isFinite(time) ? time : 0;
+    const minutes = Math.floor(safeTime / 60);
+    const seconds = Math.floor(safeTime % 60);
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
   const formatListeningTime = (seconds) => {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    
+    const safeSeconds = Number.isFinite(seconds) ? seconds : 0;
+    const hours = Math.floor(safeSeconds / 3600);
+    const minutes = Math.floor((safeSeconds % 3600) / 60);
+
     if (hours > 0) {
       return `${hours}h ${minutes}m`;
     }
     return `${minutes}m`;
   };
 
+  const syncColor =
+    roomSyncStatus === 'synced'
+      ? 'text-emerald-400'
+      : roomSyncStatus === 'degraded'
+        ? 'text-amber-400'
+        : 'text-gray-400';
+
   if (!currentSong) return null;
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700">
-      <div className="container mx-auto px-4">
-        <div className="flex items-center justify-between h-20">
-          {/* Song Info */}
-          <div className="flex items-center space-x-4 w-1/3">
-            <div className="w-14 h-14 rounded-lg overflow-hidden">
+    <div className="fixed bottom-0 left-0 right-0 border-t border-gray-700/70 bg-gray-900/95 backdrop-blur-sm">
+      <div className="container mx-auto px-3 py-3 md:px-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-center gap-3 lg:w-1/3">
+            <div className="h-14 w-14 overflow-hidden rounded-lg bg-gray-700">
               {currentSong.coverArt ? (
                 <img
-                  src={`http://localhost:5001/api/songs/cover/${currentSong.coverArt}`}
+                  src={`${API_BASE_URL}/api/songs/cover/${currentSong.coverArt}`}
                   alt={currentSong.title}
-                  className="w-full h-full object-cover"
+                  className="h-full w-full object-cover"
                 />
               ) : (
-                <div className="w-full h-full bg-purple-500 flex items-center justify-center">
-                  <svg
-                    className="w-8 h-8 text-white"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"
-                    />
-                  </svg>
+                <div className="flex h-full w-full items-center justify-center bg-primary-500/80">
+                  <span className="text-xs font-bold">FLAC</span>
                 </div>
               )}
             </div>
-            <div>
-              <h3 className="font-medium">
-                {currentSong.title}
-                <div className="flex gap-2 mt-1">
-                  {currentSong.format === 'FLAC' && (
-                    <span className="px-2 py-0.5 text-xs bg-green-500 text-white rounded-full">
-                      Lossless
-                    </span>
-                  )}
-                  {currentSong.hasDolbyAtmos && hasDolbyAtmos && (
-                    <span className="px-2 py-0.5 text-xs bg-blue-500 text-white rounded-full">
-                      Dolby Atmos
-                    </span>
-                  )}
-                </div>
-              </h3>
-              <p className="text-gray-400 text-sm">{currentSong.artist}</p>
-              <p className="text-xs text-gray-500 mt-1">
-                {formatListeningTime(listeningTime)} listening time
-              </p>
+            <div className="min-w-0">
+              <h3 className="truncate text-sm font-semibold md:text-base">{currentSong.title}</h3>
+              <p className="truncate text-xs text-gray-300 md:text-sm">{currentSong.artist}</p>
+              <div className="mt-1 flex items-center gap-2 text-[11px]">
+                {currentSong.format === 'FLAC' && (
+                  <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-emerald-300">
+                    Lossless FLAC
+                  </span>
+                )}
+                {currentSong.hasDolbyAtmos && hasDolbyAtmos && (
+                  <span className="rounded-full bg-blue-500/20 px-2 py-0.5 text-blue-300">
+                    Dolby Atmos
+                  </span>
+                )}
+                <span className="text-gray-400">{formatListeningTime(listeningTime)} listened</span>
+              </div>
             </div>
           </div>
 
-          {/* Playback Controls */}
-          <div className="flex flex-col items-center space-y-2 w-1/3">
-            <div className="flex items-center space-x-4">
+          <div className="lg:w-1/3">
+            <div className="flex items-center justify-center gap-3">
               <button
                 onClick={playPrevious}
-                className="p-2 text-gray-400 hover:text-white transition-colors"
+                className="p-2 text-gray-300 transition hover:text-white"
                 disabled={!queue.length}
               >
-                <BackwardIcon className="w-5 h-5" />
+                <BackwardIcon className="h-5 w-5" />
               </button>
 
               <button
                 onClick={toggleShuffle}
-                className={`p-2 transition-colors ${
-                  shuffle 
-                    ? 'text-primary-500 hover:text-primary-400' 
-                    : 'text-gray-400 hover:text-white'
-                }`}
+                className={`p-2 transition ${shuffle ? 'text-primary-400' : 'text-gray-400 hover:text-white'}`}
                 disabled={!queue.length}
               >
-                <ArrowsRightLeftIcon className="w-5 h-5" />
+                <ArrowsRightLeftIcon className="h-5 w-5" />
               </button>
 
               <button
                 onClick={togglePlay}
-                className="bg-primary-500 p-2 rounded-full hover:bg-primary-600"
+                className="rounded-full bg-primary-500 p-2 text-white transition hover:bg-primary-600"
                 disabled={!currentSong}
               >
-                {isPlaying ? (
-                  <PauseIcon className="w-6 h-6" />
-                ) : (
-                  <PlayIcon className="w-6 h-6" />
-                )}
+                {isPlaying ? <PauseIcon className="h-6 w-6" /> : <PlayIcon className="h-6 w-6" />}
               </button>
 
               <button
                 onClick={toggleRepeat}
-                className={`p-2 transition-colors ${
-                  repeat !== 'none'
-                    ? 'text-primary-500 hover:text-primary-400'
-                    : 'text-gray-400 hover:text-white'
-                }`}
+                className={`p-2 transition ${repeat !== 'none' ? 'text-primary-400' : 'text-gray-400 hover:text-white'}`}
                 disabled={!currentSong}
               >
-                <ArrowPathIcon className={`w-5 h-5 ${repeat === 'one' ? 'rotate-180' : ''}`} />
+                <ArrowPathIcon className={`h-5 w-5 ${repeat === 'one' ? 'rotate-180' : ''}`} />
               </button>
 
               <button
                 onClick={playNext}
-                className="p-2 text-gray-400 hover:text-white transition-colors"
+                className="p-2 text-gray-300 transition hover:text-white"
                 disabled={!queue.length}
               >
-                <ForwardIcon className="w-5 h-5" />
+                <ForwardIcon className="h-5 w-5" />
               </button>
             </div>
 
-            {/* Progress Bar */}
-            <div className="w-full flex items-center space-x-2 mt-2">
-              <span className="text-xs text-gray-400">
-                {formatTime(currentTime)}
-              </span>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="w-9 text-right text-xs text-gray-400">{formatTime(currentTime)}</span>
               <div
                 ref={progressBarRef}
-                className="flex-1 h-1 bg-gray-700 rounded-full cursor-pointer relative"
+                className="relative h-1.5 flex-1 cursor-pointer rounded-full bg-gray-700"
                 onClick={handleProgressClick}
                 onMouseDown={handleProgressMouseDown}
                 onMouseUp={handleProgressMouseUp}
@@ -293,43 +236,76 @@ const Player = () => {
                 onMouseLeave={handleProgressMouseUp}
               >
                 <div
-                  className="h-full bg-primary-500 rounded-full"
-                  style={{ width: `${progress}%` }}
+                  className="h-full rounded-full bg-primary-500"
+                  style={{ width: `${Math.max(0, Math.min(100, progress || 0))}%` }}
                 />
                 <div
-                  className={`absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg transition-transform ${
+                  className={`absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-white shadow-md transition-transform ${
                     isDragging ? 'scale-125' : 'scale-100'
                   }`}
-                  style={{ left: `${progress}%` }}
+                  style={{ left: `${Math.max(0, Math.min(100, progress || 0))}%` }}
                 />
               </div>
-              <span className="text-xs text-gray-400">
-                {formatTime(duration)}
-              </span>
+              <span className="w-9 text-xs text-gray-400">{formatTime(duration)}</span>
             </div>
           </div>
 
-          {/* Volume Control */}
-          <div className="flex items-center justify-end space-x-2 w-1/3">
-            <button
-              onClick={() => setVolume(volume === 0 ? 1 : 0)}
-              className="text-gray-400 hover:text-white"
-            >
-              {volume === 0 ? (
-                <SpeakerXMarkIcon className="w-5 h-5" />
-              ) : (
-                <SpeakerWaveIcon className="w-5 h-5" />
-              )}
-            </button>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={volume}
-              onChange={(e) => setVolume(parseFloat(e.target.value))}
-              className="w-24"
-            />
+          <div className="flex flex-col gap-2 lg:w-1/3 lg:items-end">
+            <div className="flex w-full items-center justify-end gap-2">
+              <button
+                onClick={() => setVolume(volume === 0 ? 1 : 0)}
+                className="text-gray-300 transition hover:text-white"
+              >
+                {volume === 0 ? <SpeakerXMarkIcon className="h-5 w-5" /> : <SpeakerWaveIcon className="h-5 w-5" />}
+              </button>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={volume}
+                onChange={(e) => setVolume(parseFloat(e.target.value))}
+                className="w-28"
+              />
+            </div>
+
+            <div className="w-full rounded-md border border-gray-700 bg-gray-800/60 p-2">
+              <div className="mb-1 flex items-center justify-between text-xs">
+                <div className={`flex items-center gap-1 ${syncColor}`}>
+                  <SignalIcon className="h-3.5 w-3.5" />
+                  <span>{roomId ? `Room ${roomId}` : 'Room sync off'}</span>
+                </div>
+                <div className="flex items-center gap-1 text-gray-400">
+                  <UserGroupIcon className="h-3.5 w-3.5" />
+                  <span>{roomMemberCount}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  value={roomInput}
+                  onChange={(e) => setRoomInput(e.target.value)}
+                  placeholder="room-id"
+                  className="h-8 flex-1 rounded bg-gray-900 px-2 text-xs text-white outline-none ring-1 ring-gray-700 focus:ring-primary-500"
+                />
+                {!roomId ? (
+                  <button
+                    onClick={handleJoinRoom}
+                    disabled={isJoiningRoom}
+                    className="h-8 rounded bg-primary-600 px-3 text-xs font-medium text-white transition hover:bg-primary-700 disabled:opacity-60"
+                  >
+                    {isJoiningRoom ? 'Joining...' : 'Join'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleLeaveRoom}
+                    className="h-8 rounded bg-gray-700 px-3 text-xs font-medium text-white transition hover:bg-gray-600"
+                  >
+                    Leave
+                  </button>
+                )}
+              </div>
+              {roomError && <p className="mt-1 text-[11px] text-rose-400">{roomError}</p>}
+            </div>
           </div>
         </div>
       </div>
@@ -337,4 +313,4 @@ const Player = () => {
   );
 };
 
-export default Player; 
+export default Player;

@@ -16,79 +16,47 @@ const Navbar = () => {
   };
 
   return (
-    <nav className="bg-gray-800 border-b border-gray-700">
+    <nav className="sticky top-0 z-30 border-b border-gray-700/70 bg-gray-900/85 backdrop-blur-md">
       <div className="container mx-auto px-4">
-        <div className="flex items-center justify-between h-16">
-          <Link to="/" className="text-xl font-bold text-white">
-            Lossless Music Streamer
+        <div className="flex h-16 items-center justify-between">
+          <Link to="/" className="text-lg font-semibold tracking-tight text-white md:text-xl">
+            Lossly
+            <span className="ml-2 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300">
+              FLAC
+            </span>
           </Link>
 
-          <div className="flex items-center space-x-4">
-            <Link
-              to="/search"
-              className="text-gray-300 hover:text-white transition-colors"
-            >
+          <div className="flex items-center gap-3 text-sm md:gap-5">
+            <Link to="/search" className="text-gray-300 transition hover:text-white">
               Search
             </Link>
 
             {user ? (
               <>
-                <Link
-                  to="/library"
-                  className="text-gray-300 hover:text-white transition-colors"
-                >
+                <Link to="/library" className="text-gray-300 transition hover:text-white">
                   Library
                 </Link>
-                <Link
-                  to="/playlist/create"
-                  className="text-gray-300 hover:text-white transition-colors"
-                >
-                  Create Playlist
+                <Link to="/playlist/create" className="text-gray-300 transition hover:text-white">
+                  New Playlist
                 </Link>
-                <div className="relative group">
-                  <button className="flex items-center text-gray-300 hover:text-white transition-colors">
-                    <span className="mr-2">{user.username}</span>
-                    <svg
-                      className="w-4 h-4"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M19 9l-7 7-7-7"
-                      />
-                    </svg>
-                  </button>
-                  <div className="absolute right-0 mt-2 w-48 bg-gray-800 rounded-lg shadow-lg py-1 hidden group-hover:block">
-                    <Link
-                      to="/profile"
-                      className="block px-4 py-2 text-gray-300 hover:text-white hover:bg-gray-700"
-                    >
-                      Profile
-                    </Link>
-                    <button
-                      onClick={handleLogout}
-                      className="block w-full text-left px-4 py-2 text-gray-300 hover:text-white hover:bg-gray-700"
-                    >
-                      Logout
-                    </button>
-                  </div>
-                </div>
+                <Link to="/profile" className="text-gray-300 transition hover:text-white">
+                  {user.username}
+                </Link>
+                <button
+                  onClick={handleLogout}
+                  className="rounded-md border border-gray-600 px-3 py-1.5 text-gray-200 transition hover:border-gray-400 hover:text-white"
+                >
+                  Logout
+                </button>
               </>
             ) : (
               <>
-                <Link
-                  to="/login"
-                  className="text-gray-300 hover:text-white transition-colors"
-                >
+                <Link to="/login" className="text-gray-300 transition hover:text-white">
                   Login
                 </Link>
                 <Link
                   to="/register"
-                  className="bg-purple-500 text-white px-4 py-2 rounded-lg hover:bg-purple-600 transition-colors"
+                  className="rounded-md bg-primary-600 px-3 py-1.5 font-medium text-white transition hover:bg-primary-700"
                 >
                   Sign Up
                 </Link>
@@ -101,4 +69,4 @@ const Navbar = () => {
   );
 };
 
-export default Navbar; 
+export default Navbar;

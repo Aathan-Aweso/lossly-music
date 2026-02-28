@@ -158,16 +158,22 @@ router.get('/:id/stream', async (req, res) => {
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Range');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length');
-    res.setHeader('Access-Control-Accept-Ranges', 'bytes');
-
-    // Read the file into a buffer
-    const fileBuffer = fs.readFileSync(filePath);
+    res.setHeader('Accept-Ranges', 'bytes');
+    // Prevent intermediaries from modifying audio payload.
+    res.setHeader('Cache-Control', 'no-store, no-transform');
 
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
       const chunksize = (end - start) + 1;
+
+      if (start >= fileSize || end >= fileSize || start > end) {
+        res.status(416).set({
+          'Content-Range': `bytes */${fileSize}`
+        }).end();
+        return;
+      }
 
       const head = {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
@@ -177,14 +183,24 @@ router.get('/:id/stream', async (req, res) => {
       };
 
       res.writeHead(206, head);
-      res.end(fileBuffer.slice(start, end + 1));
+      const stream = fs.createReadStream(filePath, { start, end });
+      stream.on('error', (streamErr) => {
+        console.error('Error streaming range:', streamErr);
+        res.end();
+      });
+      stream.pipe(res);
     } else {
       const head = {
         'Content-Length': fileSize,
         'Content-Type': contentType
       };
       res.writeHead(200, head);
-      res.end(fileBuffer);
+      const stream = fs.createReadStream(filePath);
+      stream.on('error', (streamErr) => {
+        console.error('Error streaming file:', streamErr);
+        res.end();
+      });
+      stream.pipe(res);
     }
 
     // Increment play count

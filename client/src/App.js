@@ -23,8 +23,9 @@ function App() {
       <AuthProvider>
         <PlayerProvider>
           <div className="min-h-screen bg-gray-900 text-white">
+            <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,0.14),transparent_35%),radial-gradient(circle_at_top_left,rgba(16,185,129,0.14),transparent_35%)]" />
             <Navbar />
-            <main className="pb-24">
+            <main className="container mx-auto pb-28">
               <Routes>
                 <Route path="/" element={<Home />} />
                 <Route path="/login" element={<Login />} />

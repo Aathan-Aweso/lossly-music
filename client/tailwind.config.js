@@ -1,17 +1,17 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
-    "./src/**/*.{js,jsx,ts,tsx}",
-    "./public/index.html"
+    './src/**/*.{js,jsx,ts,tsx}',
+    './public/index.html'
   ],
   theme: {
     extend: {
       colors: {
         primary: {
-          400: '#a78bfa',
-          500: '#8b5cf6',
-          600: '#7c3aed',
-          700: '#6d28d9'
+          400: '#38bdf8',
+          500: '#0ea5e9',
+          600: '#0284c7',
+          700: '#0369a1'
         },
         gray: {
           900: '#121212',
@@ -23,16 +23,12 @@ module.exports = {
           300: '#b3b3b3',
           200: '#d3d3d3',
           100: '#f5f5f5'
-        },
-        purple: {
-          500: '#9333ea',
-          600: '#7e22ce'
         }
       },
       animation: {
-        'spin-slow': 'spin 3s linear infinite',
-      },
-    },
+        'spin-slow': 'spin 3s linear infinite'
+      }
+    }
   },
   plugins: []
-}; 
+};
