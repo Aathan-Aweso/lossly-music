@@ -1,616 +1,543 @@
-import React, { createContext, useContext, useState, useRef, useEffect } from 'react';
+import React, { createContext, useContext, useState, useRef, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import config from '../config';
 
 const PlayerContext = createContext(null);
 
-const ROOM_POLL_INTERVAL_MS = 750;
-const ROOM_DRIFT_THRESHOLD_SECONDS = 0.08;
-const ROOM_SYNC_THROTTLE_MS = 150;
+// ── Constants ──────────────────────────────────────────────────────────────────
 
-const getApiBaseUrl = () => process.env.REACT_APP_API_URL || 'http://localhost:5001';
+const QUALITY_KEY = 'lossly_quality';
+const ROOM_CLIENT_KEY = 'lossly_room_client_id';
+const ROOM_SYNC_THROTTLE_MS = 200;
+const PLAY_COUNT_THRESHOLD_SECONDS = 30;
 
-const normalizeRoomId = (value = '') =>
-  value.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '').slice(0, 32);
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
-const createClientId = () => {
+function getClientId() {
   try {
-    const cached = localStorage.getItem('roomClientId');
+    const cached = localStorage.getItem(ROOM_CLIENT_KEY);
     if (cached) return cached;
-    const next = `c_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
-    localStorage.setItem('roomClientId', next);
-    return next;
-  } catch (error) {
+    const id = `c_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
+    localStorage.setItem(ROOM_CLIENT_KEY, id);
+    return id;
+  } catch {
     return `c_${Date.now().toString(36)}`;
   }
-};
+}
+
+function getSavedQuality() {
+  try { return localStorage.getItem(QUALITY_KEY) || 'lossless'; } catch { return 'lossless'; }
+}
+
+function saveQuality(q) {
+  try { localStorage.setItem(QUALITY_KEY, q); } catch {}
+}
+
+function normalizeRoomId(v = '') {
+  return String(v).trim().toLowerCase().replace(/[^a-z0-9-_]/g, '').slice(0, 32);
+}
+
+function sanitizeSong(song) {
+  if (!song?._id) return null;
+  return {
+    _id: song._id,
+    title: song.title || 'Unknown',
+    artist: song.artist || 'Unknown',
+    coverArt: song.coverArt || 'default-cover.png',
+    duration: Number(song.duration) || 0,
+    format: song.format || '',
+    hasDolbyAtmos: Boolean(song.hasDolbyAtmos),
+  };
+}
 
 export const usePlayer = () => {
-  const context = useContext(PlayerContext);
-  if (!context) {
-    throw new Error('usePlayer must be used within a PlayerProvider');
-  }
-  return context;
+  const ctx = useContext(PlayerContext);
+  if (!ctx) throw new Error('usePlayer must be used within a PlayerProvider');
+  return ctx;
 };
+
+// ── Stream token cache ────────────────────────────────────────────────────────
+// Maps songId -> { token, expiresAt }
+
+const tokenCache = new Map();
+
+async function fetchStreamToken(songId) {
+  const cached = tokenCache.get(songId);
+  if (cached && Date.now() < cached.expiresAt - 60_000) return cached.token;
+
+  const authToken = localStorage.getItem('token');
+  if (!authToken) throw new Error('Not authenticated');
+
+  const { data } = await axios.get(`${config.API_URL}/api/playback/${songId}/token`, {
+    headers: { Authorization: `Bearer ${authToken}` },
+  });
+
+  tokenCache.set(songId, {
+    token: data.token,
+    expiresAt: Date.now() + data.expiresIn * 1000,
+  });
+  return data.token;
+}
+
+function buildStreamUrl(songId, quality, token) {
+  return `${config.API_URL}/api/playback/${songId}/stream?t=${encodeURIComponent(token)}&q=${quality}`;
+}
+
+// ── Provider ───────────────────────────────────────────────────────────────────
 
 export const PlayerProvider = ({ children }) => {
   const [currentSong, setCurrentSong] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [volume, setVolume] = useState(0.5);
+  const [volume, setVolume] = useState(0.8);
   const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
   const [queue, setQueue] = useState([]);
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState('none');
   const [isLoading, setIsLoading] = useState(false);
-  const [duration, setDuration] = useState(0);
-  const [currentTime, setCurrentTime] = useState(0);
   const [listeningTime, setListeningTime] = useState(0);
+  const [quality, setQualityState] = useState(getSavedQuality);
 
+  // Room state
   const [roomId, setRoomId] = useState('');
-  const [roomMembers, setRoomMembers] = useState([]);
   const [roomMemberCount, setRoomMemberCount] = useState(0);
   const [roomSyncStatus, setRoomSyncStatus] = useState('idle');
 
   const audioRef = useRef(null);
   const isChangingSong = useRef(false);
-  const lastUpdateTime = useRef(Date.now());
-
-  const roomClientIdRef = useRef(createClientId());
-  const roomPollTimerRef = useRef(null);
-  const roomVersionRef = useRef(0);
-  const roomIdRef = useRef('');
-  const currentSongRef = useRef(null);
-  const suppressRoomBroadcastRef = useRef(false);
   const pendingSeekRef = useRef(null);
-  const lastRoomSyncAtRef = useRef(0);
 
-  const sanitizeSong = (song) => {
-    if (!song || !song._id) return null;
-    return {
-      _id: song._id,
-      title: song.title || 'Unknown title',
-      artist: song.artist || 'Unknown artist',
-      coverArt: song.coverArt || 'default-cover.png',
-      duration: Number(song.duration) || 0,
-      format: song.format || '',
-      hasDolbyAtmos: Boolean(song.hasDolbyAtmos)
-    };
-  };
+  const currentSongRef = useRef(null);
+  const isPlayingRef = useRef(false);
+  const queueRef = useRef([]);
 
-  const getRoomUsername = () => {
-    try {
-      const token = localStorage.getItem('token');
-      if (!token) return 'Listener';
-      return 'Listener';
-    } catch (error) {
-      return 'Listener';
-    }
-  };
+  // Room WS refs
+  const wsRef = useRef(null);
+  const roomIdRef = useRef('');
+  const clientIdRef = useRef(getClientId());
+  const suppressBroadcastRef = useRef(false);
+  const lastSyncAtRef = useRef(0);
+  const playedCountedRef = useRef(false);
+  const playTimeRef = useRef(0);
+  const lastPlayTickRef = useRef(null);
 
-  const getPlaybackPosition = () => {
-    if (audioRef.current && Number.isFinite(audioRef.current.currentTime)) {
-      return Math.max(0, audioRef.current.currentTime);
-    }
-    return Math.max(0, currentTime || 0);
-  };
+  // Keep refs in sync with state for use in callbacks
+  useEffect(() => { currentSongRef.current = currentSong; }, [currentSong]);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { queueRef.current = queue; }, [queue]);
+  useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
 
-  const buildPlaybackSnapshot = () => ({
-    currentSong: sanitizeSong(currentSong),
-    queue: queue.map(sanitizeSong).filter(Boolean),
-    isPlaying,
-    position: getPlaybackPosition()
-  });
+  // ── Quality ──────────────────────────────────────────────────────────────────
 
-  const applySeekIfPending = () => {
-    if (!audioRef.current) return;
-    if (pendingSeekRef.current === null) return;
-
-    const seekTarget = Math.max(0, Number(pendingSeekRef.current) || 0);
-    pendingSeekRef.current = null;
-
-    try {
-      audioRef.current.currentTime = seekTarget;
-    } catch (error) {
-      pendingSeekRef.current = seekTarget;
-    }
-  };
-
-  const syncRoomState = async () => {
-    const activeRoomId = roomIdRef.current;
-    if (!activeRoomId) return;
-
-    try {
-      const response = await axios.get(`/api/rooms/${activeRoomId}/state`, {
-        params: {
-          clientId: roomClientIdRef.current,
-          username: getRoomUsername()
-        }
+  const setQuality = useCallback((q) => {
+    saveQuality(q);
+    setQualityState(q);
+    // Reload current song with new quality
+    const song = currentSongRef.current;
+    if (song && audioRef.current) {
+      const wasPlaying = !audioRef.current.paused;
+      const time = audioRef.current.currentTime;
+      pendingSeekRef.current = time;
+      loadSongIntoAudio(song, q).then(() => {
+        if (wasPlaying) audioRef.current?.play().catch(() => {});
       });
-
-      const room = response.data;
-      roomVersionRef.current = Math.max(roomVersionRef.current, room.version || 0);
-      setRoomMembers(room.members || []);
-      setRoomMemberCount(room.memberCount || 0);
-      setRoomSyncStatus('synced');
-
-      const playback = room.playback || {};
-      const remoteSongId = playback.currentSong?._id || null;
-      const localSongId = currentSongRef.current?._id || null;
-      const isRemoteController = playback.updatedBy && playback.updatedBy !== roomClientIdRef.current;
-
-      if (!isRemoteController && remoteSongId === localSongId) {
-        if (audioRef.current && playback.isPlaying) {
-          const drift = Math.abs(audioRef.current.currentTime - (playback.position || 0));
-          if (drift > ROOM_DRIFT_THRESHOLD_SECONDS) {
-            audioRef.current.currentTime = Math.max(0, playback.position || 0);
-          }
-        }
-        return;
-      }
-
-      suppressRoomBroadcastRef.current = true;
-
-      const remoteQueue = Array.isArray(playback.queue) ? playback.queue : [];
-      setQueue(remoteQueue);
-      setCurrentSong(playback.currentSong || null);
-      setIsPlaying(Boolean(playback.isPlaying));
-      pendingSeekRef.current = Math.max(0, playback.position || 0);
-
-      if (
-        audioRef.current &&
-        remoteSongId &&
-        remoteSongId === localSongId &&
-        Number.isFinite(audioRef.current.duration)
-      ) {
-        const drift = Math.abs(audioRef.current.currentTime - pendingSeekRef.current);
-        if (drift > ROOM_DRIFT_THRESHOLD_SECONDS) {
-          audioRef.current.currentTime = pendingSeekRef.current;
-          pendingSeekRef.current = null;
-        }
-      }
-
-      window.setTimeout(() => {
-        suppressRoomBroadcastRef.current = false;
-      }, 40);
-    } catch (error) {
-      setRoomSyncStatus('degraded');
     }
-  };
-
-  const pushRoomSync = async () => {
-    const activeRoomId = roomIdRef.current;
-    if (!activeRoomId || suppressRoomBroadcastRef.current) return;
-
-    const now = Date.now();
-    if (now - lastRoomSyncAtRef.current < ROOM_SYNC_THROTTLE_MS) {
-      return;
-    }
-    lastRoomSyncAtRef.current = now;
-
-    try {
-      const response = await axios.post('/api/rooms/sync', {
-        roomId: activeRoomId,
-        clientId: roomClientIdRef.current,
-        username: getRoomUsername(),
-        playback: buildPlaybackSnapshot()
-      });
-
-      const room = response.data;
-      roomVersionRef.current = Math.max(roomVersionRef.current, room.version || 0);
-      setRoomMembers(room.members || []);
-      setRoomMemberCount(room.memberCount || 0);
-      setRoomSyncStatus('synced');
-    } catch (error) {
-      setRoomSyncStatus('degraded');
-    }
-  };
-
-  const scheduleRoomSync = (delay = 80) => {
-    if (!roomIdRef.current || suppressRoomBroadcastRef.current) return;
-    window.setTimeout(() => {
-      pushRoomSync();
-    }, delay);
-  };
-
-  const startRoomPolling = () => {
-    if (roomPollTimerRef.current) {
-      window.clearInterval(roomPollTimerRef.current);
-    }
-
-    roomPollTimerRef.current = window.setInterval(() => {
-      if (roomIdRef.current) {
-        syncRoomState();
-      }
-    }, ROOM_POLL_INTERVAL_MS);
-  };
-
-  const stopRoomPolling = () => {
-    if (roomPollTimerRef.current) {
-      window.clearInterval(roomPollTimerRef.current);
-      roomPollTimerRef.current = null;
-    }
-  };
-
-  const joinRoom = async (rawRoomId) => {
-    const normalized = normalizeRoomId(rawRoomId);
-    if (!normalized) {
-      throw new Error('Room id is invalid');
-    }
-
-    const response = await axios.post('/api/rooms/join', {
-      roomId: normalized,
-      clientId: roomClientIdRef.current,
-      username: getRoomUsername()
-    });
-
-    const room = response.data;
-    setRoomId(normalized);
-    roomIdRef.current = normalized;
-    setRoomMembers(room.members || []);
-    setRoomMemberCount(room.memberCount || 0);
-    roomVersionRef.current = room.version || 0;
-    setRoomSyncStatus('synced');
-
-    const playback = room.playback || {};
-    if (playback.currentSong || playback.queue?.length) {
-      suppressRoomBroadcastRef.current = true;
-      setQueue(Array.isArray(playback.queue) ? playback.queue : []);
-      setCurrentSong(playback.currentSong || null);
-      setIsPlaying(Boolean(playback.isPlaying));
-      pendingSeekRef.current = Math.max(0, playback.position || 0);
-      window.setTimeout(() => {
-        suppressRoomBroadcastRef.current = false;
-      }, 50);
-    }
-
-    startRoomPolling();
-    await syncRoomState();
-  };
-
-  const leaveRoom = async () => {
-    const activeRoom = roomId;
-    roomIdRef.current = '';
-    setRoomId('');
-    setRoomMembers([]);
-    setRoomMemberCount(0);
-    setRoomSyncStatus('idle');
-    roomVersionRef.current = 0;
-    stopRoomPolling();
-
-    if (!activeRoom) return;
-
-    try {
-      await axios.post('/api/rooms/leave', {
-        roomId: activeRoom,
-        clientId: roomClientIdRef.current
-      });
-    } catch (error) {
-      // noop
-    }
-  };
-
-  useEffect(() => () => stopRoomPolling(), []);
-
-  useEffect(() => {
-    roomIdRef.current = roomId;
-  }, [roomId]);
-
-  useEffect(() => {
-    currentSongRef.current = currentSong;
-  }, [currentSong]);
-
-  useEffect(() => {
-    let interval;
-    if (isPlaying && currentSong) {
-      interval = setInterval(() => {
-        const now = Date.now();
-        const timeDiff = Math.floor((now - lastUpdateTime.current) / 1000);
-        if (timeDiff > 0) {
-          updateListeningTime(timeDiff);
-          lastUpdateTime.current = now;
-        }
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [isPlaying, currentSong]);
-
-  const updateListeningTime = async (timeInSeconds) => {
-    try {
-      const response = await axios.post('/api/users/listening-time', {
-        timeInSeconds
-      });
-      setListeningTime(response.data.listeningTime);
-    } catch (error) {
-      // listening-time updates require auth, so silent failure is expected for guests
-    }
-  };
-
-  useEffect(() => {
-    const fetchListeningTime = async () => {
-      try {
-        const response = await axios.get('/api/users/listening-time');
-        setListeningTime(response.data.listeningTime);
-      } catch (error) {
-        // silent for unauthenticated users
-      }
-    };
-    fetchListeningTime();
   }, []);
 
-  useEffect(() => {
-    if (audioRef.current && currentSong) {
-      setIsLoading(true);
-      isChangingSong.current = true;
-      audioRef.current.src = `${getApiBaseUrl()}/api/songs/${currentSong._id}/stream`;
+  // ── Audio loading ────────────────────────────────────────────────────────────
+
+  async function loadSongIntoAudio(song, q) {
+    if (!audioRef.current || !song) return;
+    setIsLoading(true);
+    isChangingSong.current = true;
+    playedCountedRef.current = false;
+    playTimeRef.current = 0;
+
+    try {
+      const token = await fetchStreamToken(song._id);
+      audioRef.current.src = buildStreamUrl(song._id, q || quality, token);
       audioRef.current.load();
+    } catch (err) {
+      console.error('Failed to get stream token:', err);
+      setIsLoading(false);
+      setIsPlaying(false);
+      isChangingSong.current = false;
     }
-  }, [currentSong]);
+  }
 
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume;
-    }
+    if (currentSong) loadSongIntoAudio(currentSong, quality);
+  }, [currentSong]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Volume ───────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = volume;
   }, [volume]);
 
-  useEffect(() => {
-    if (!audioRef.current) return;
+  // ── Play/pause ───────────────────────────────────────────────────────────────
 
-    const audio = audioRef.current;
-    if (isPlaying && !isLoading && !isChangingSong.current) {
-      const playPromise = audio.play();
-      if (playPromise !== undefined) {
-        playPromise
-          .then(() => {
-            setIsPlaying(true);
-            setIsLoading(false);
-          })
-          .catch(error => {
-            if (error.name !== 'AbortError') {
-              console.error('Error playing audio:', error);
-              setIsPlaying(false);
-              setIsLoading(false);
-            }
-          });
-      }
-    } else if (!isPlaying) {
-      audio.pause();
+  useEffect(() => {
+    if (!audioRef.current || isLoading || isChangingSong.current) return;
+    if (isPlaying) {
+      audioRef.current.play().catch(err => {
+        if (err.name !== 'AbortError') { console.error(err); setIsPlaying(false); }
+      });
+    } else {
+      audioRef.current.pause();
     }
   }, [isPlaying, isLoading]);
 
-  const handleTimeUpdate = () => {
-    if (audioRef.current) {
-      const safeDuration = audioRef.current.duration || 0;
-      const currentProgress = safeDuration > 0
-        ? (audioRef.current.currentTime / safeDuration) * 100
-        : 0;
-      setProgress(currentProgress);
-      setCurrentTime(audioRef.current.currentTime);
+  // ── Play count tracking ──────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!isPlaying || !currentSong) {
+      lastPlayTickRef.current = null;
+      return;
     }
+    const tick = setInterval(() => {
+      if (!isPlayingRef.current) return;
+      const now = Date.now();
+      if (lastPlayTickRef.current) {
+        playTimeRef.current += (now - lastPlayTickRef.current) / 1000;
+      }
+      lastPlayTickRef.current = now;
+
+      // Update listening time on server every 10s
+      if (playTimeRef.current > 0 && Math.floor(playTimeRef.current) % 10 === 0) {
+        const authToken = localStorage.getItem('token');
+        if (authToken) {
+          axios.post(`${config.API_URL}/api/users/listening-time`,
+            { timeInSeconds: 10 },
+            { headers: { Authorization: `Bearer ${authToken}` } }
+          ).catch(() => {});
+        }
+      }
+
+      if (!playedCountedRef.current && playTimeRef.current >= PLAY_COUNT_THRESHOLD_SECONDS) {
+        playedCountedRef.current = true;
+        const authToken = localStorage.getItem('token');
+        const songId = currentSongRef.current?._id;
+        if (authToken && songId) {
+          axios.post(`${config.API_URL}/api/songs/${songId}/played`,
+            {},
+            { headers: { Authorization: `Bearer ${authToken}` } }
+          ).catch(() => {});
+        }
+      }
+    }, 1000);
+
+    lastPlayTickRef.current = Date.now();
+    return () => clearInterval(tick);
+  }, [isPlaying, currentSong]);
+
+  // ── Fetch initial listening time ─────────────────────────────────────────────
+
+  useEffect(() => {
+    const authToken = localStorage.getItem('token');
+    if (!authToken) return;
+    axios.get(`${config.API_URL}/api/users/listening-time`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    }).then(r => setListeningTime(r.data.listeningTime)).catch(() => {});
+  }, []);
+
+  // ── Audio element events ──────────────────────────────────────────────────────
+
+  const handleTimeUpdate = () => {
+    if (!audioRef.current) return;
+    const d = audioRef.current.duration || 0;
+    const t = audioRef.current.currentTime;
+    setCurrentTime(t);
+    setProgress(d > 0 ? (t / d) * 100 : 0);
   };
 
   const handleLoadedMetadata = () => {
     if (audioRef.current) {
       setDuration(audioRef.current.duration || 0);
-      applySeekIfPending();
+      applyPendingSeek();
     }
   };
 
   const handleCanPlay = () => {
     setIsLoading(false);
     isChangingSong.current = false;
-    applySeekIfPending();
-
-    if (isPlaying) {
-      const playPromise = audioRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise
-          .then(() => {
-            setIsPlaying(true);
-          })
-          .catch(error => {
-            if (error.name !== 'AbortError') {
-              console.error('Error playing audio after load:', error);
-              setIsPlaying(false);
-            }
-          });
-      }
-    }
-  };
-
-  const getNextIndex = () => {
-    if (!queue.length || !currentSong) return -1;
-    const currentIndex = queue.findIndex(song => song._id === currentSong._id);
-
-    if (shuffle) {
-      let nextIndex;
-      do {
-        nextIndex = Math.floor(Math.random() * queue.length);
-      } while (nextIndex === currentIndex && queue.length > 1);
-      return nextIndex;
-    }
-
-    return (currentIndex + 1) % queue.length;
-  };
-
-  const getPreviousIndex = () => {
-    if (!queue.length || !currentSong) return -1;
-    const currentIndex = queue.findIndex(song => song._id === currentSong._id);
-
-    if (shuffle) {
-      let prevIndex;
-      do {
-        prevIndex = Math.floor(Math.random() * queue.length);
-      } while (prevIndex === currentIndex && queue.length > 1);
-      return prevIndex;
-    }
-
-    return (currentIndex - 1 + queue.length) % queue.length;
-  };
-
-  const playNext = () => {
-    const nextIndex = getNextIndex();
-    if (nextIndex !== -1) {
-      setCurrentSong(queue[nextIndex]);
-      setTimeout(() => {
-        setIsPlaying(true);
-      }, 50);
-      scheduleRoomSync(120);
-    } else {
-      setIsPlaying(false);
-      setCurrentSong(null);
-      scheduleRoomSync(120);
-    }
-  };
-
-  const playPrevious = () => {
-    const prevIndex = getPreviousIndex();
-    if (prevIndex !== -1) {
-      setCurrentSong(queue[prevIndex]);
-      setTimeout(() => {
-        setIsPlaying(true);
-      }, 50);
-      scheduleRoomSync(120);
+    applyPendingSeek();
+    if (isPlayingRef.current) {
+      audioRef.current?.play().catch(err => {
+        if (err.name !== 'AbortError') { console.error(err); setIsPlaying(false); }
+      });
     }
   };
 
   const handleEnded = () => {
     if (repeat === 'one') {
       audioRef.current.currentTime = 0;
-      const playPromise = audioRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise.catch(error => {
-          if (error.name !== 'AbortError') {
-            console.error('Error replaying audio:', error);
-          }
-        });
-      }
-      scheduleRoomSync();
+      audioRef.current.play().catch(() => {});
+      wsSend({ type: 'sync', playback: buildSnapshot() });
       return;
     }
-
-    if (repeat === 'all' || queue.length > 0) {
-      playNext();
+    if (repeat === 'all' || queueRef.current.length > 0) {
+      advanceQueue(1);
       return;
     }
-
     setIsPlaying(false);
     setCurrentSong(null);
-    scheduleRoomSync(120);
   };
 
-  const playSong = (song) => {
-    if (!song) return;
+  const handleAudioError = (e) => {
+    console.error('Audio error:', audioRef.current?.error);
+    setIsLoading(false);
+    setIsPlaying(false);
+    isChangingSong.current = false;
+  };
 
-    if (queue.some(s => s._id === song._id)) {
+  function applyPendingSeek() {
+    if (pendingSeekRef.current !== null && audioRef.current) {
+      try {
+        audioRef.current.currentTime = Math.max(0, pendingSeekRef.current);
+        pendingSeekRef.current = null;
+      } catch {
+        // will retry
+      }
+    }
+  }
+
+  // ── Queue navigation ──────────────────────────────────────────────────────────
+
+  function getNextIndex(q, song, shuf) {
+    if (!q.length || !song) return -1;
+    const cur = q.findIndex(s => s._id === song._id);
+    if (shuf) {
+      if (q.length === 1) return 0;
+      let next;
+      do { next = Math.floor(Math.random() * q.length); } while (next === cur);
+      return next;
+    }
+    return (cur + 1) % q.length;
+  }
+
+  function getPrevIndex(q, song, shuf) {
+    if (!q.length || !song) return -1;
+    const cur = q.findIndex(s => s._id === song._id);
+    if (shuf) {
+      if (q.length === 1) return 0;
+      let prev;
+      do { prev = Math.floor(Math.random() * q.length); } while (prev === cur);
+      return prev;
+    }
+    return (cur - 1 + q.length) % q.length;
+  }
+
+  function advanceQueue(direction) {
+    const q = queueRef.current;
+    const song = currentSongRef.current;
+    const idx = direction > 0 ? getNextIndex(q, song, shuffle) : getPrevIndex(q, song, shuffle);
+    if (idx !== -1) {
+      setCurrentSong(q[idx]);
+      setTimeout(() => setIsPlaying(true), 50);
+      setTimeout(() => wsSend({ type: 'sync', playback: buildSnapshot() }), 150);
+    } else {
+      setIsPlaying(false);
+      setCurrentSong(null);
+    }
+  }
+
+  const playNext = useCallback(() => advanceQueue(1), [shuffle, repeat]);
+  const playPrevious = useCallback(() => advanceQueue(-1), [shuffle]);
+
+  // ── Playback controls ─────────────────────────────────────────────────────────
+
+  const togglePlay = useCallback(() => {
+    setIsPlaying(p => !p);
+    setTimeout(() => wsSend({ type: 'sync', playback: buildSnapshot() }), 50);
+  }, []);
+
+  const seekTo = useCallback((time) => {
+    if (!audioRef.current) return;
+    audioRef.current.currentTime = time;
+    setCurrentTime(time);
+    const d = audioRef.current.duration || 0;
+    setProgress(d > 0 ? (time / d) * 100 : 0);
+    setTimeout(() => wsSend({ type: 'sync', playback: buildSnapshot() }), 50);
+  }, []);
+
+  const toggleShuffle = useCallback(() => setShuffle(s => !s), []);
+  const toggleRepeat = useCallback(() => setRepeat(r => r === 'none' ? 'one' : r === 'one' ? 'all' : 'none'), []);
+
+  // ── Queue management ──────────────────────────────────────────────────────────
+
+  const playSong = useCallback((song) => {
+    if (!song) return;
+    const q = queueRef.current;
+    if (q.some(s => s._id === song._id)) {
       setCurrentSong(song);
       setIsPlaying(true);
-      scheduleRoomSync(120);
+      setTimeout(() => wsSend({ type: 'sync', playback: buildSnapshot() }), 150);
       return;
     }
-
-    if (queue.length === 0) {
+    const cur = currentSongRef.current;
+    if (q.length === 0) {
       setQueue([song]);
       setCurrentSong(song);
-      setIsPlaying(true);
-      scheduleRoomSync(120);
-      return;
-    }
-
-    const currentIndex = queue.findIndex(s => s._id === currentSong?._id);
-    const newQueue = [...queue];
-
-    if (currentIndex === -1) {
-      newQueue.push(song);
     } else {
-      newQueue.splice(currentIndex + 1, 0, song);
+      const curIdx = q.findIndex(s => s._id === cur?._id);
+      const newQ = [...q];
+      newQ.splice(curIdx === -1 ? newQ.length : curIdx + 1, 0, song);
+      setQueue(newQ);
+      setCurrentSong(song);
     }
-
-    setQueue(newQueue);
-    setCurrentSong(song);
     setIsPlaying(true);
-    scheduleRoomSync(120);
-  };
+    setTimeout(() => wsSend({ type: 'sync', playback: buildSnapshot() }), 150);
+  }, []);
 
-  const playQueue = (songs, startIndex = 0) => {
-    if (!Array.isArray(songs) || songs.length === 0) return;
+  const playQueue = useCallback((songs, startIndex = 0) => {
+    if (!Array.isArray(songs) || !songs.length) return;
     setQueue(songs);
     setCurrentSong(songs[startIndex]);
     setIsPlaying(true);
-    scheduleRoomSync(120);
-  };
+    setTimeout(() => wsSend({ type: 'sync', playback: buildSnapshot() }), 150);
+  }, []);
 
-  const clearQueue = () => {
+  const clearQueue = useCallback(() => {
     setQueue([]);
     setCurrentSong(null);
     setIsPlaying(false);
-    scheduleRoomSync(120);
-  };
+  }, []);
 
-  const addToQueue = (song) => {
-    setQueue(prev => [...prev, song]);
-    scheduleRoomSync(120);
-  };
+  const addToQueue = useCallback((song) => setQueue(q => [...q, song]), []);
+  const removeFromQueue = useCallback((idx) => setQueue(q => q.filter((_, i) => i !== idx)), []);
 
-  const removeFromQueue = (index) => {
-    setQueue(prev => prev.filter((_, i) => i !== index));
-    scheduleRoomSync(120);
-  };
+  // ── Room WebSocket ────────────────────────────────────────────────────────────
 
-  const seekTo = (time) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = time;
-      setCurrentTime(time);
-      const safeDuration = audioRef.current.duration || 0;
-      setProgress(safeDuration > 0 ? (time / safeDuration) * 100 : 0);
-      scheduleRoomSync(20);
+  function buildSnapshot() {
+    return {
+      currentSong: sanitizeSong(currentSongRef.current),
+      queue: queueRef.current.map(sanitizeSong).filter(Boolean),
+      isPlaying: isPlayingRef.current,
+      position: audioRef.current?.currentTime ?? 0,
+    };
+  }
+
+  function wsSend(msg) {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (msg.type === 'sync') {
+      const now = Date.now();
+      if (now - lastSyncAtRef.current < ROOM_SYNC_THROTTLE_MS) return;
+      lastSyncAtRef.current = now;
     }
-  };
+    ws.send(JSON.stringify(msg));
+  }
 
-  const togglePlay = () => {
-    setIsPlaying((prev) => !prev);
-    scheduleRoomSync(20);
-  };
+  function applyRoomState(playback) {
+    if (!playback) return;
+    suppressBroadcastRef.current = true;
 
-  const toggleShuffle = () => {
-    setShuffle(!shuffle);
-  };
+    setQueue(Array.isArray(playback.queue) ? playback.queue : []);
+    setCurrentSong(playback.currentSong || null);
+    setIsPlaying(Boolean(playback.isPlaying));
+    pendingSeekRef.current = Math.max(0, playback.position || 0);
 
-  const toggleRepeat = () => {
-    setRepeat(repeat === 'none' ? 'one' : repeat === 'one' ? 'all' : 'none');
-  };
+    // If same song already loaded, just seek directly
+    if (
+      audioRef.current &&
+      playback.currentSong?._id === currentSongRef.current?._id &&
+      Number.isFinite(audioRef.current.duration)
+    ) {
+      audioRef.current.currentTime = Math.max(0, playback.position || 0);
+      pendingSeekRef.current = null;
+    }
+
+    setTimeout(() => { suppressBroadcastRef.current = false; }, 60);
+  }
+
+  const joinRoom = useCallback(async (rawId) => {
+    const id = normalizeRoomId(rawId);
+    if (!id) throw new Error('Invalid room id');
+
+    closeWs();
+
+    const wsUrl = `${config.WS_URL}/ws/rooms?roomId=${id}&clientId=${clientIdRef.current}&username=Listener`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        ws.close();
+        reject(new Error('Room connection timed out'));
+      }, 8000);
+
+      ws.onopen = () => {
+        clearTimeout(timeout);
+        setRoomId(id);
+        roomIdRef.current = id;
+        setRoomSyncStatus('synced');
+        resolve();
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'ping') {
+            ws.send(JSON.stringify({ type: 'pong' }));
+            return;
+          }
+          if (msg.type === 'state' && msg.room) {
+            const room = msg.room;
+            setRoomMemberCount(room.memberCount || 0);
+            setRoomSyncStatus('synced');
+            if (!suppressBroadcastRef.current) {
+              applyRoomState(room.playback);
+            }
+          }
+        } catch {}
+      };
+
+      ws.onerror = () => setRoomSyncStatus('degraded');
+      ws.onclose = () => {
+        if (roomIdRef.current === id) {
+          setRoomSyncStatus('degraded');
+        }
+      };
+    });
+  }, []);
+
+  const leaveRoom = useCallback(async () => {
+    closeWs();
+    setRoomId('');
+    roomIdRef.current = '';
+    setRoomMemberCount(0);
+    setRoomSyncStatus('idle');
+  }, []);
+
+  function closeWs() {
+    if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+  }
+
+  useEffect(() => () => closeWs(), []);
+
+  // ── Context value ─────────────────────────────────────────────────────────────
 
   const value = {
-    currentSong,
-    isPlaying,
-    setIsPlaying,
-    togglePlay,
-    volume,
-    setVolume,
-    progress,
-    setProgress,
-    seekTo,
-    playNext,
-    playPrevious,
-    shuffle,
-    toggleShuffle,
-    repeat,
-    toggleRepeat,
-    queue,
-    playSong,
-    playQueue,
-    clearQueue,
-    addToQueue,
-    removeFromQueue,
+    currentSong, isPlaying, setIsPlaying, togglePlay,
+    volume, setVolume,
+    progress, setProgress, seekTo,
+    playNext, playPrevious,
+    shuffle, toggleShuffle,
+    repeat, toggleRepeat,
+    queue, playSong, playQueue, clearQueue, addToQueue, removeFromQueue,
     audioRef,
-    duration,
-    currentTime,
-    isLoading,
+    duration, currentTime, isLoading,
     listeningTime,
-    roomId,
-    roomMembers,
-    roomMemberCount,
-    roomSyncStatus,
-    joinRoom,
-    leaveRoom
+    quality, setQuality,
+    // Room
+    roomId, roomMemberCount, roomSyncStatus,
+    joinRoom, leaveRoom,
   };
 
   return (
@@ -620,15 +547,9 @@ export const PlayerProvider = ({ children }) => {
         ref={audioRef}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
-        onEnded={handleEnded}
         onCanPlay={handleCanPlay}
-        onError={(e) => {
-          console.error('Audio error:', e);
-          console.error('Audio element error:', audioRef.current?.error);
-          setIsLoading(false);
-          setIsPlaying(false);
-          isChangingSong.current = false;
-        }}
+        onEnded={handleEnded}
+        onError={handleAudioError}
         crossOrigin="anonymous"
       />
     </PlayerContext.Provider>

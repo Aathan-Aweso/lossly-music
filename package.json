@@ -2,13 +2,13 @@
   "name": "lossless-music-streamer",
   "version": "1.0.0",
   "description": "A Spotify-like web player streaming service with lossless audio quality",
-  "main": "server/index.js",
+  "main": "server/server.js",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "nodemon server/index.js",
+    "start": "node server/server.js",
+    "dev": "nodemon server/server.js",
     "client": "cd client && npm start",
     "dev:full": "concurrently \"npm run dev\" \"npm run client\"",
-    "bulk-upload": "node server/scripts/bulkUpload.js"
+    "import": "node server/modules/library/bulkImport.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -24,7 +24,8 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^7.5.0",
     "multer": "^1.4.5-lts.1",
-    "music-metadata": "^11.0.2"
+    "music-metadata": "^11.0.2",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "concurrently": "^8.2.1",
